@@ -32,6 +32,7 @@ local HELP_LINES = {
 
 local show_help = false
 local show_changelog_for = nil  -- 当前展开 changelog 的插件名
+local confirm_for = nil    -- 当前正在确认删除的插件名
 
 -- 生成窗口内容行
 ---@return string[], table[]  lines, highlights {line, col_start, col_end, hl_group}
@@ -87,6 +88,16 @@ local function render_lines()
                 table.insert(lines, cl_line)
                 table.insert(hls, { line = #lines - 1, col_start = 0, col_end = -1, hl_group = 'Comment' })
             end
+            table.insert(lines, '  └─────────────────────────────────────────────────')
+            table.insert(hls, { line = #lines - 1, col_start = 0, col_end = -1, hl_group = 'Comment' })
+        end
+
+        -- 确认删除模式
+        if confirm_for == plug.name then
+            table.insert(lines, '  ┌─ 确认卸载 ' .. plug.name .. '？ ──────────────────────────────')
+            table.insert(hls, { line = #lines - 1, col_start = 0, col_end = -1, hl_group = 'DiagnosticWarn' })
+            table.insert(lines, '  │  [Enter] 确认删除    [q] 取消')
+            table.insert(hls, { line = #lines - 1, col_start = 0, col_end = -1, hl_group = 'Comment' })
             table.insert(lines, '  └─────────────────────────────────────────────────')
             table.insert(hls, { line = #lines - 1, col_start = 0, col_end = -1, hl_group = 'Comment' })
         end
@@ -166,6 +177,7 @@ local function close()
     buf = nil
     show_changelog_for = nil
     show_help = false
+    confirm_for = nil
 end
 
 -- 设置 buffer-local 快捷键
@@ -174,9 +186,7 @@ local function set_keymaps()
         vim.keymap.set('n', key, fn, { buffer = buf, nowait = true, silent = true })
     end
 
-    -- 关闭
-    map('q', close)
-    map('<Esc>', close)
+    -- 关闭 (在确认模式下由上面重新定义为 cancel + close)
 
     -- 更新全部
     map('U', function()
@@ -202,18 +212,12 @@ local function set_keymaps()
         end)
     end)
 
-    -- 卸载当前插件
+    -- 卸载当前插件 - 进入确认模式
     map('d', function()
         local plug = get_plugin_at_cursor()
         if not plug then return end
-        actions.delete(plug.name, function(ok, msg)
-            vim.schedule(function()
-                if ok then
-                    refresh()
-                end
-                set_status(ok and ('✓ ' .. msg) or ('  ' .. msg))
-            end)
-        end)
+        confirm_for = plug.name
+        refresh()
     end)
 
     -- 修复损坏插件
@@ -232,6 +236,49 @@ local function set_keymaps()
                 set_status(ok and ('✓ ' .. msg) or ('✗ ' .. msg))
             end)
         end)
+    end)
+
+    -- 确认删除 - Enter 或 y 执行删除
+    local function confirm_delete()
+        if not confirm_for then return end
+        local plug
+        for _, p in ipairs(plugins) do
+            if p.name == confirm_for then
+                plug = p
+                break
+            end
+        end
+        if not plug then
+            confirm_for = nil
+            refresh()
+            return
+        end
+        set_status('⟳ 正在卸载 ' .. plug.name .. '...')
+        actions.delete(plug.name, function(ok, msg)
+            vim.schedule(function()
+                confirm_for = nil
+                if ok then
+                    refresh()
+                end
+                set_status(ok and ('✓ ' .. msg) or ('✗ ' .. msg))
+            end)
+        end)
+    end
+    map('<Enter>', confirm_delete)
+    map('y', confirm_delete)
+
+    -- 取消确认 - q, n 或 Esc
+    local function cancel_confirm()
+        confirm_for = nil
+        set_status('  已取消')
+        refresh()
+    end
+    map('q', function()
+        if confirm_for then cancel_confirm() else close() end
+    end)
+    map('n', cancel_confirm)
+    map('<Esc>', function()
+        if confirm_for then cancel_confirm() else close() end
     end)
 
     -- 查看 changelog

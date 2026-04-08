@@ -15,19 +15,10 @@ function M.update_all(on_done)
     on_done(true, '全部插件更新完成')
 end
 
--- 卸载插件（带二次确认）
+-- 卸载插件（无需二次确认，确认已在 UI 中完成）
 ---@param name string
 ---@param on_done fun(ok: boolean, msg: string)
 function M.delete(name, on_done)
-    local choice = vim.fn.confirm(
-        '确认卸载插件 "' .. name .. '" ？\n此操作将删除插件目录，无法撤销。',
-        '&是\n&否',
-        2
-    )
-    if choice ~= 1 then
-        on_done(false, '已取消')
-        return
-    end
     local ok, err = pcall(function()
         vim.pack.del({ name }, { force = true })
     end)
