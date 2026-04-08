@@ -23,9 +23,10 @@ local HELP_LINES = {
     '  快捷键帮助:',
     '  U      更新全部插件',
     '  u      更新光标所在插件',
-    '  d      卸载光标所在插件（需确认）',
-    '  r      修复损坏的插件（需确认）',
-    '  l      查看 changelog（git log）',
+    '  d      卸载光标所在插件',
+    '  r      修复损坏的插件',
+    '  l      查看 changelog',
+    '  i      查看详情',
     '  ?      切换帮助显示',
     '  q / <Esc>  关闭窗口',
 }
@@ -33,6 +34,10 @@ local HELP_LINES = {
 local show_help = false
 local show_changelog_for = nil  -- 当前展开 changelog 的插件名
 local confirm_for = nil    -- 当前正在确认删除的插件名
+local show_detail_for = nil  -- 当前展开详情的插件名
+
+-- 缓存详情信息
+local detail_cache = {}
 
 -- 生成窗口内容行
 ---@return string[], table[]  lines, highlights {line, col_start, col_end, hl_group}
@@ -101,6 +106,30 @@ local function render_lines()
             table.insert(lines, '  └─────────────────────────────────────────────────')
             table.insert(hls, { line = #lines - 1, col_start = 0, col_end = -1, hl_group = 'Comment' })
         end
+
+        -- 详情展开模式
+        if show_detail_for == plug.name and detail_cache[plug.name] then
+            local detail = detail_cache[plug.name]
+            table.insert(lines, '  ┌─ 详情 ──────────────────────────────────────')
+            table.insert(hls, { line = #lines - 1, col_start = 0, col_end = -1, hl_group = 'Comment' })
+            if detail.description and detail.description ~= '' then
+                table.insert(lines, '  │ 描述: ' .. detail.description)
+                table.insert(hls, { line = #lines - 1, col_start = 0, col_end = -1, hl_group = 'Comment' })
+            end
+            if #detail.dependencies > 0 then
+                table.insert(lines, '  │ 依赖: ' .. table.concat(detail.dependencies, ', '))
+                table.insert(hls, { line = #lines - 1, col_start = 0, col_end = -1, hl_group = 'Comment' })
+            else
+                table.insert(lines, '  │ 依赖: (无)')
+                table.insert(hls, { line = #lines - 1, col_start = 0, col_end = -1, hl_group = 'Comment' })
+            end
+            if detail.version_compare then
+                table.insert(lines, '  │ 版本: ' .. detail.version_compare)
+                table.insert(hls, { line = #lines - 1, col_start = 0, col_end = -1, hl_group = 'Comment' })
+            end
+            table.insert(lines, '  └─────────────────────────────────────────────────')
+            table.insert(hls, { line = #lines - 1, col_start = 0, col_end = -1, hl_group = 'Comment' })
+        end
     end
 
     table.insert(lines, string.rep('─', 56))
@@ -134,7 +163,7 @@ local function refresh()
     end
 end
 
--- 根据光标行获取对应的插件（考虑 changelog 展开）
+-- 根据光标行获取对应的插件（考虑 changelog 和详情展开）
 ---@return table|nil
 local function get_plugin_at_cursor()
     if not buf or not vim.api.nvim_buf_is_valid(buf) then return nil end
@@ -153,6 +182,15 @@ local function get_plugin_at_cursor()
         if show_changelog_for == plug.name then
             local cl = state.get_changelog(plug.path)
             current_line = current_line + #cl + 2  -- header + lines + footer
+        end
+        -- 如果展开详情
+        if show_detail_for == plug.name and detail_cache[plug.name] then
+            local detail = detail_cache[plug.name]
+            local detail_lines = 2  -- header + footer
+            if detail.description and detail.description ~= '' then detail_lines = detail_lines + 1 end
+            if #detail.dependencies > 0 then detail_lines = detail_lines + 1 end
+            if detail.version_compare then detail_lines = detail_lines + 1 end
+            current_line = current_line + detail_lines
         end
     end
     return nil
@@ -178,6 +216,8 @@ local function close()
     show_changelog_for = nil
     show_help = false
     confirm_for = nil
+    show_detail_for = nil
+    detail_cache = {}
 end
 
 -- 设置 buffer-local 快捷键
@@ -188,15 +228,29 @@ local function set_keymaps()
 
     -- 关闭 (在确认模式下由上面重新定义为 cancel + close)
 
-    -- 更新全部
+    -- 更新全部（带进度条）
     map('U', function()
         set_status('⟳ 正在更新全部插件...')
-        actions.update_all(function(ok, msg)
-            vim.schedule(function()
+        local plugins_list = vim.pack.get(nil, { info = false })
+        local total = #plugins_list
+        local current = 0
+        local function do_update()
+            current = current + 1
+            if current > total then
                 refresh()
-                set_status(ok and ('✓ ' .. msg) or ('✗ ' .. msg))
-            end)
-        end)
+                set_status('✓ 全部插件更新完成')
+                return
+            end
+            local plug = plugins_list[current]
+            local percent = math.floor(current / total * 100)
+            local bar_len = 20
+            local filled = math.floor(bar_len * current / total)
+            local bar = string.rep('█', filled) .. string.rep('░', bar_len - filled)
+            set_status(string.format('[%s] %d%% (%d/%d) 正在更新 %s...', bar, percent, current, total, plug.name))
+            vim.pack.update({ plug.name }, { force = true })
+            vim.defer_fn(do_update, 50)
+        end
+        do_update()
     end)
 
     -- 更新当前插件
@@ -204,12 +258,11 @@ local function set_keymaps()
         local plug = get_plugin_at_cursor()
         if not plug then return end
         set_status('⟳ 正在更新 ' .. plug.name .. '...')
-        actions.update_one(plug.name, function(ok, msg)
-            vim.schedule(function()
-                refresh()
-                set_status(ok and ('✓ ' .. msg) or ('✗ ' .. msg))
-            end)
-        end)
+        vim.pack.update({ plug.name }, { force = true })
+        vim.defer_fn(function()
+            refresh()
+            set_status('✓ ' .. plug.name .. ' 更新完成')
+        end, 100)
     end)
 
     -- 卸载当前插件 - 进入确认模式
@@ -279,6 +332,31 @@ local function set_keymaps()
     map('n', cancel_confirm)
     map('<Esc>', function()
         if confirm_for then cancel_confirm() else close() end
+    end)
+
+    -- 展开详情 - 按 i 键
+    map('i', function()
+        local plug = get_plugin_at_cursor()
+        if not plug then return end
+        if show_detail_for == plug.name then
+            show_detail_for = nil
+        else
+            show_detail_for = plug.name
+            -- 异步获取详情
+            vim.schedule(function()
+                if not detail_cache[plug.name] then
+                    detail_cache[plug.name] = {
+                        description = state.get_description(plug.path),
+                        dependencies = state.get_dependencies(plug.path),
+                        version_compare = state.compare_versions(plug.path),
+                    }
+                end
+                if show_detail_for == plug.name then
+                    refresh()
+                end
+            end)
+        end
+        refresh()
     end)
 
     -- 查看 changelog

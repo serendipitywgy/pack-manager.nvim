@@ -1,18 +1,40 @@
 local M = {}
 
--- 更新单个插件
+-- 更新单个插件（带进度回调）
 ---@param name string
+---@param on_progress fun(current: number, total: number, name: string)|nil
 ---@param on_done fun(ok: boolean, msg: string)
-function M.update_one(name, on_done)
+function M.update_one(name, on_progress, on_done)
+    if on_progress then
+        on_progress(1, 1, name)
+    end
     vim.pack.update({ name }, { force = true })
     on_done(true, name .. ' 更新完成')
 end
 
--- 更新全部插件
+-- 更新全部插件（带进度回调）
+---@param on_progress fun(current: number, total: number, name: string)
 ---@param on_done fun(ok: boolean, msg: string)
-function M.update_all(on_done)
-    vim.pack.update(nil, { force = true })
-    on_done(true, '全部插件更新完成')
+function M.update_all(on_progress, on_done)
+    local plugins = vim.pack.get(nil, { info = false })
+    local total = #plugins
+
+    -- 逐个更新以获取进度
+    local function update_next(idx)
+        if idx > total then
+            on_done(true, '全部插件更新完成')
+            return
+        end
+        local plug = plugins[idx]
+        on_progress(idx, total, plug.name)
+
+        vim.pack.update({ plug.name }, { force = true })
+        vim.defer_fn(function()
+            update_next(idx + 1)
+        end, 100)
+    end
+
+    update_next(1)
 end
 
 -- 卸载插件（无需二次确认，确认已在 UI 中完成）
